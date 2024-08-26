@@ -41,7 +41,7 @@ from .utils import combine_jsons, reach_json
 
 #Set Global Variables
 
-s3 = boto3.SESSION.resource('s3')
+s3 = boto3.resource('s3')
 
 BUCKET_NAME = 'streamflow-app-data'
 BUCKET = s3.Bucket(BUCKET_NAME) 
