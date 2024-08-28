@@ -216,7 +216,7 @@ class State_Eval(MapLayout):
       
             # USGS stations - from AWS s3
             stations_path = f"GeoJSON/StreamStats_{state_id}_4326.geojson" 
-            obj = s3.Object(BUCKET_NAME, stations_path)
+            obj = S3.Object(BUCKET_NAME, stations_path)
 
             # set the map extend based on the stations
             gdf = gpd.read_file(obj.get()['Body'], driver='GeoJSON')
@@ -261,7 +261,7 @@ class State_Eval(MapLayout):
     
             # USGS stations - from AWS s3
             stations_path = f"GeoJSON/StreamStats_{state_id}_4326.geojson" #will need to change the filename to have state before 4326
-            obj = s3.Object(BUCKET_NAME, stations_path)
+            obj = S3.Object(BUCKET_NAME, stations_path)
             stations_geojson = json.load(obj.get()['Body']) 
 
             # set the map extend based on the stations
