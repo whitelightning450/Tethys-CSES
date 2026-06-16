@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=45"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tethysapp-community_streamflow_evaluation_system"
+version = "0.0.1"
+description = ""
+license = {text = ""}
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.setuptools.packages.find]
+include = ["tethysapp*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.js", "*.css", "*.html", "*.png", "*.ico", "*.jpg", "*.gif", "*.svg", "*.json", "*.yml", "*.yaml", "*.txt", "*.xml", "*.csv", "*.geojson", "*.tif", "*.tiff"]

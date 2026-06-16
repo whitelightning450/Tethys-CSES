@@ -7,3 +7,20 @@
   background-color: #003087 ;
   color:white !important;
 }
+
+.loading-text{
+  font-size: 15px;
+  font-weight: bold;
+  text-align: center;
+  margin-top: 20px;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+.loading-text p {
+  animation: blink 1s infinite;
+}

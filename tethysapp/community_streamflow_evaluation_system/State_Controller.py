@@ -12,12 +12,14 @@ import boto3
 import os
 from botocore import UNSIGNED 
 from botocore.client import Config
+from botocore.exceptions import ClientError
+
 import os
 os.environ['AWS_NO_SIGN_REQUEST'] = 'YES'
 
 #Model evaluation metrics
 from sklearn.metrics import r2_score
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import root_mean_squared_error
 from sklearn.metrics import max_error
 from sklearn.metrics import mean_absolute_percentage_error
 import hydroeval as he
@@ -32,7 +34,7 @@ from django.http import JsonResponse
 from django.urls import reverse_lazy
 from datetime import datetime
 from datetime import date, timedelta
-
+from django.contrib import messages
 #Connect web pages
 from django.http import HttpResponse 
 
@@ -77,8 +79,7 @@ class State_Eval(MapLayout):
     show_properties_popup = True  
     plot_slide_sheet = True
     template_name = 'community_streamflow_evaluation_system/state_eval.html' 
-   
-     
+
     def get_context(self, request, *args, **kwargs):
         """
         Create context for the Map Layout view, with an override for the map extents based on stream and weather gauges.
@@ -213,13 +214,12 @@ class State_Eval(MapLayout):
             enddate = enddate.strip('][').split(', ')
             model_id = request.GET.get('model_id')
             model_id = model_id.strip('][').split(', ')
-      
             # USGS stations - from AWS s3
             stations_path = f"GeoJSON/StreamStats_{state_id}_4326.geojson" 
             obj = S3.Object(BUCKET_NAME, stations_path)
 
             # set the map extend based on the stations
-            gdf = gpd.read_file(obj.get()['Body'], driver='GeoJSON')
+            gdf = gpd.read_file(obj.get()['Body'])
             map_view['view']['extent'] = list(gdf.geometry.total_bounds)
 
             #update json with start/end date, modelid to support click, adjustment in the get_plot_for_layer_feature()
@@ -257,18 +257,23 @@ class State_Eval(MapLayout):
         except: 
             #Default state id to initiat mapping
             print('No useable inputs, default mapping')
-            state_id = 'AL'
+
+            # state_id = 'AL'
     
-            # USGS stations - from AWS s3
-            stations_path = f"GeoJSON/StreamStats_{state_id}_4326.geojson" #will need to change the filename to have state before 4326
-            obj = S3.Object(BUCKET_NAME, stations_path)
-            stations_geojson = json.load(obj.get()['Body']) 
+            # # USGS stations - from AWS s3
+            # stations_path = f"GeoJSON/StreamStats_{state_id}_4326.geojson" #will need to change the filename to have state before 4326
+            # obj = S3.Object(BUCKET_NAME, stations_path)
+            # stations_geojson = json.load(obj.get()['Body']) 
 
-            # set the map extend based on the stations
-            gdf = gpd.read_file(obj.get()['Body'], driver='GeoJSON')
-            map_view['view']['extent'] = list(gdf.geometry.total_bounds)
+            # # set the map extend based on the stations
+            # gdf = gpd.read_file(obj.get()['Body'])
+            # map_view['view']['extent'] = list(gdf.geometry.total_bounds)
         
-
+            stations_geojson = {
+                "type": "FeatureCollection",
+                "crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
+                "features": []
+            }
             stations_layer = self.build_geojson_layer(
                 geojson=stations_geojson,
                 layer_name='USGS Stations',
@@ -346,12 +351,13 @@ class State_Eval(MapLayout):
 
         # Get the feature ids, add start/end date, and model as features in geojson above to have here.
         id = feature_props.get('id') #we could connect the hydrofabric in here for NWM v3.0
-        NHD_id = feature_props.get('NHD_id') 
+        NHD_id = feature_props.get('NHD_id')
         state = feature_props.get('state')
-        startdate= feature_props.get('startdate')
-        enddate = feature_props.get('enddate')
-        model_id = feature_props.get('model_id')
-  
+
+
+        startdate = request.session.get('start_date', '')
+        enddate = request.session.get('end_date', '')
+        model_id = request.session.get('model_id', '')
         # USGS observed flow
         if layer_name == 'USGS Stations':
             layout = {
@@ -364,12 +370,24 @@ class State_Eval(MapLayout):
             }  
 
             #USGS observed flow
-            USGS_directory = f"NWIS/NWIS_sites_{state}.h5/NWIS_{id}.csv"
-            obj = BUCKET.Object(USGS_directory)
-            body = obj.get()['Body']
-            USGS_df = pd.read_csv(body)
-            USGS_df.pop('Unnamed: 0')  
-            
+
+
+            try:
+                USGS_directory = f"NWIS/NWIS_sites_{state}.h5/NWIS_{id}.csv"
+                print(USGS_directory)
+                obj = BUCKET.Object(USGS_directory)
+                body = obj.get()['Body']
+                USGS_df = pd.read_csv(body)
+                USGS_df.pop('Unnamed: 0')
+                USGS_df.reset_index(inplace=True)
+                USGS_df.drop_duplicates(subset=['Datetime'], inplace=True)
+                USGS_df.set_index('Datetime', inplace = True, drop = True)
+
+            except ClientError as e:
+                if e.response['Error']['Code'] == 'NoSuchKey':
+                    print(f"File not found: {USGS_directory}")
+                    # Handle missing file, perhaps return an empty DataFrame or a helpful message
+                    USGS_df = pd.DataFrame()  # or handle accordingly
 
             #modeled flow, starting with NWM
             try:
@@ -379,28 +397,30 @@ class State_Eval(MapLayout):
                 body = obj.get()['Body']
                 model_df = pd.read_csv(body)
                 model_df.pop('Unnamed: 0')
+
                 modelcols = model_df.columns.to_list()[-2:]
                 model_df = model_df[modelcols]
 
                  #combine Dfs, remove nans
-                USGS_df.drop_duplicates(subset=['Datetime'], inplace=True)
                 model_df.drop_duplicates(subset=['Datetime'],  inplace=True)
-                USGS_df.set_index('Datetime', inplace = True, drop = True)
                 model_df.set_index('Datetime', inplace = True, drop = True)
+
                 DF = pd.concat([USGS_df, model_df], axis = 1, join = 'inner')
                 #try to select user input dates
                 DF = DF.loc[startdate:enddate]
                 DF.reset_index(inplace=True)
-                
+                DF = DF.dropna()
+                if DF.empty:
+                    data = []
+                    return f'No data for Default Configuration:{model} Observed Streamflow at USGS site: {id}', data, layout
                 time_col = DF.Datetime.to_list()#limited to less than 500 obs/days 
                 USGS_streamflow_cfs = DF.USGS_flow.to_list()#limited to less than 500 obs/days 
                 Mod_streamflow_cfs = DF[f"{model_id[:3]}_flow"].to_list()#limited to less than 500 obs/days
 
                 #calculate model skill
-                r2 = round(r2_score(USGS_streamflow_cfs, Mod_streamflow_cfs),2)
-                rmse = round(mean_squared_error(USGS_streamflow_cfs, Mod_streamflow_cfs, squared=False),0)
+                print(USGS_streamflow_cfs)
+                rmse = round(root_mean_squared_error(USGS_streamflow_cfs, Mod_streamflow_cfs),0)
                 maxerror = round(max_error(USGS_streamflow_cfs, Mod_streamflow_cfs),0)
-                MAPE = round(mean_absolute_percentage_error(USGS_streamflow_cfs, Mod_streamflow_cfs)*100,0)
                 kge, r, alpha, beta = he.evaluator(he.kge,USGS_streamflow_cfs,Mod_streamflow_cfs)
                 kge = round(kge[0],2)
  
@@ -428,63 +448,110 @@ class State_Eval(MapLayout):
                     },
                 ]
                 
-
-                return f"{model_id} and Observed Streamflow at USGS site: {id} <br> RMSE: {rmse} cfs <br> KGE: {kge} <br> MaxError: {maxerror} cfs", data, layout
+                return f'{model_id} and Observed Streamflow at USGS site: {id} <p style="font-size:15px;margin-bottom: 0px;margin-bottom: 0px;"> RMSE: {rmse}</p> cfs <p style="font-size:15px;margin-bottom: 0px;margin-bottom: 0px;"> KGE: {kge} </p> <p style="font-size:15px;margin-bottom: 0px;margin-bottom: 0px;"> MaxError: {maxerror} cfs </p>', data, layout
             
             except:
                 print("No user inputs, default configuration.")
-                model = 'NWM_v2.1'
-                model_directory = f"{model}/NHD_segments_{state}.h5/{model}_{NHD_id}.csv"  #put state in geojson file
-                obj = BUCKET.Object(model_directory)
-                body = obj.get()['Body']
-                model_df = pd.read_csv(body)
-                model_df.pop('Unnamed: 0')
+                try:
+                    model = 'NWM_v2.1'
+                    model_directory = f"{model}/NHD_segments_{state}.h5/{model}_{NHD_id}.csv"  #put state in geojson file
+                    obj = BUCKET.Object(model_directory)
+                    body = obj.get()['Body']
+                    model_df = pd.read_csv(body)
+                    model_df.pop('Unnamed: 0')
+                    #combine Dfs, remove nans
+                    
+                    model_df.drop_duplicates(subset=['Datetime'],  inplace=True)
+                    model_df.set_index('Datetime', inplace = True)
+                    DF = pd.concat([USGS_df, model_df], axis = 1, join = 'inner')
+                    DF.reset_index(inplace=True)
+                    DF = DF.dropna()
+                    if DF.empty:
+                        data = []
+                        return f'No data for Default Configuration:{model} Observed Streamflow at USGS site: {id}', data, layout
+                        
+                    time_col = DF.Datetime.to_list()[:45] 
+                    USGS_streamflow_cfs = DF.USGS_flow.to_list()[:45] 
+                    Mod_streamflow_cfs = DF[f"{model[:3]}_flow"].to_list()[:45]
 
-                #combine Dfs, remove nans
-                USGS_df.drop_duplicates(subset=['Datetime'], inplace=True)
-                model_df.drop_duplicates(subset=['Datetime'],  inplace=True)
-                USGS_df.set_index('Datetime', inplace = True)
-                model_df.set_index('Datetime', inplace = True)
-                DF = pd.concat([USGS_df, model_df], axis = 1, join = 'inner')
-                DF.reset_index(inplace=True)
-                time_col = DF.Datetime.to_list()[:45] 
-                USGS_streamflow_cfs = DF.USGS_flow.to_list()[:45] 
-                Mod_streamflow_cfs = DF[f"{model[:3]}_flow"].to_list()[:45]
+                    rmse = round(root_mean_squared_error(USGS_streamflow_cfs, Mod_streamflow_cfs),0)
+                    maxerror = round(max_error(USGS_streamflow_cfs, Mod_streamflow_cfs),0)
+                    kge, r, alpha, beta = he.evaluator(he.kge,USGS_streamflow_cfs,Mod_streamflow_cfs)
+                    kge = round(kge[0],2)
 
-                #calculate model skill
-                r2 = round(r2_score(USGS_streamflow_cfs, Mod_streamflow_cfs),2)
-                rmse = round(mean_squared_error(USGS_streamflow_cfs, Mod_streamflow_cfs, squared=False),0)
-                maxerror = round(max_error(USGS_streamflow_cfs, Mod_streamflow_cfs),0)
-                MAPE = round(mean_absolute_percentage_error(USGS_streamflow_cfs, Mod_streamflow_cfs)*100,0)
-                kge, r, alpha, beta = he.evaluator(he.kge,USGS_streamflow_cfs,Mod_streamflow_cfs)
-                kge = round(kge[0],2)
+                    data = [
+                        {
+                            'name': 'USGS Observed',
+                            'mode': 'lines',
+                            'x': time_col,
+                            'y': USGS_streamflow_cfs,
+                            'line': {
+                                'width': 2,
+                                'color': 'blue'
+                            }
+                        },
+                        {
+                            'name': f"Default Configuration: NWM v2.1 Modeled",
+                            'mode': 'lines',
+                            'x': time_col,
+                            'y': Mod_streamflow_cfs,
+                            'line': {
+                                'width': 2,
+                                'color': 'red'
+                            }
+                        },
+                    ]
 
-                data = [
-                    {
-                        'name': 'USGS Observed',
-                        'mode': 'lines',
-                        'x': time_col,
-                        'y': USGS_streamflow_cfs,
-                        'line': {
-                            'width': 2,
-                            'color': 'blue'
-                        }
-                    },
-                    {
-                        'name': f"Default Configuration: NWM v2.1 Modeled",
-                        'mode': 'lines',
-                        'x': time_col,
-                        'y': Mod_streamflow_cfs,
-                        'line': {
-                            'width': 2,
-                            'color': 'red'
-                        }
-                    },
-                ]
-
-
-                return f'Default Configuration:{model} Observed Streamflow at USGS site: {id} <br> RMSE: {rmse} cfs <br> KGE: {kge} <br> MaxError: {maxerror} cfs', data, layout
+                    return f'Default Configuration:{model} Observed Streamflow at USGS site: {id} <p style="font-size:15px;margin-bottom: 0px;"> RMSE: {rmse} cfs </p> <p style="font-size:15px;margin-bottom: 0px;">KGE: {kge}</p> <p style="font-size:15px;margin-bottom: 0px;">MaxError: {maxerror} cfs</p>', data, layout
             
-            
+                except:    
+                    data = []
+                    return f'No data for Default Configuration:{model} Observed Streamflow at USGS site: {id}', data, layout
+                
+    def update_state_eval_data(self, request, *args, **kwargs):
+        """Respond to AJAX calls from the map page."""
+        data = request.POST or request.json()
+        request.session['model_id'] = data.get('model_id')
+        request.session['start_date'] = data.get('start_date')
+        request.session['end_date'] = data.get('end_date')
+        request.session['state_id'] = data.get('state_id')
+        try:
+            stations_path = f"GeoJSON/StreamStats_{data.get('state_id')}_4326.geojson"
+            obj = S3.Object(BUCKET_NAME, stations_path)
+            stations_geojson = json.load(obj.get()['Body'])
+            stations_layer = self.build_geojson_layer(
+                    geojson=stations_geojson,
+                    layer_name='USGS Stations',
+                    layer_title='USGS Station',
+                    layer_variable='stations',
+                    visible=True,
+                    selectable=True,
+                    plottable=True,
+            )
+            msg = f'Updated data'
+        except:
+            # state_id = 'AL'
+            # USGS stations - from AWS s3
+            # stations_path = f"GeoJSON/StreamStats_{state_id}_4326.geojson" #will need to change the filename to have state before 4326
+            # obj = S3.Object(BUCKET_NAME, stations_path)
+            # stations_geojson = json.load(obj.get()['Body'])
+            stations_geojson = {
+                "type": "FeatureCollection",
+                "crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
+                "features": []
+            }
+
+            stations_layer = self.build_geojson_layer(
+                geojson=stations_geojson,
+                layer_name='USGS Stations',
+                layer_title='USGS Station',
+                layer_variable='stations',
+                visible=True,
+                selectable=True,
+                plottable=True,
+            )
+            msg = f'No data available for this State, please try another State or check your inputs.'
+        return JsonResponse({'success': True, 'message': msg,'metadata': stations_layer ,'geojson': stations_geojson})
+
 
 

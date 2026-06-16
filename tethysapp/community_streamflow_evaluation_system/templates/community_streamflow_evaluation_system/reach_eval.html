@@ -4,19 +4,36 @@
 
 {% block after_nav_header %}
   {{ block.super }}
-  <br>
-  <form action="{% url 'community_streamflow_evaluation_system:reach_eval' %}" method="get">
-    <p>Input reaches of interest and select a model and start/end date from the dropdown below to view timeseries and an interactive map.</p>
-    <div style="width:100%">{% gizmo TextInput reach_ids %}</div>
-    <div style="width:100%">{% gizmo SelectInput model_id %}</div>
-    <div style="width:100%">{% gizmo date_picker start_date_picker %}</div>
-    <div style="width:100%">{% gizmo date_picker end_date_picker %}</div>
-    <span class="btn-group ">
-        <a name="submit-go-to-map" class="btn btn-success" role="button" onclick="document.forms[0].submit();">
-            <span class="glyphicon glyphicon-play"></span>Update Map
-        </a>
-    </span>
-</form>
-<p> Date ranges > 450 days may not load.</p>
+    <form id="reach-eval-form"
+        action="{% url 'community_streamflow_evaluation_system:reach_eval' %}"
+        method="post">
+        {% csrf_token %}
+
+        <p>Input reaches of interest and select a model and start/end date from the dropdown below to view timeseries and an interactive map.</p>
+
+        <div>{% gizmo TextInput reach_ids %}</div>
+        <div>{% gizmo SelectInput model_id %}</div>
+        <div>{% gizmo date_picker start_date_picker %}</div>
+        <div>{% gizmo date_picker end_date_picker %}</div>
+        <br/>
+        <button type="submit" class="btn btn-success">
+            <span class="glyphicon glyphicon-play"></span> Update Map
+        </button>
+    </form>
+    <br/>
+    <strong>Note:</strong><span> If no data are available for the selected model, the application will automatically switch to NWM v2.1 and load the full time range that is available for that dataset.</span>
+    <br/>
+    <div class="loading-text" style="display:none;">
+        <p>Loading Data...</p>
+    </div>
+
+    <br/>
+
+    <p>Please be patient, it takes a few seconds to generate the input request. Date ranges > 450 days may not load.</p>
+
 {% endblock %}
 
+{% block scripts %}
+  {{ block.super }}
+  <script src="{% static 'community_streamflow_evaluation_system/js/reach.js' %}"></script>
+{% endblock %}

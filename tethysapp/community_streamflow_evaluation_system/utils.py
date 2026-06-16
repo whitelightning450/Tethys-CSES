@@ -10,7 +10,7 @@ def combine_jsons(file_list, BUCKET_NAME, s3):
     for json_file in file_list:
         obj = s3.Object(BUCKET_NAME, json_file)
         stations_geojson = json.load(obj.get()['Body']) 
-        gdf = gpd.read_file(obj.get()['Body'], driver='GeoJSON')
+        gdf = gpd.read_file(obj.get()['Body'])
         all_data_df = pd.concat([all_data_df, gdf]).set_crs(crs= 'EPSG:4326')
 
     return all_data_df
